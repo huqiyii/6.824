@@ -9,6 +9,7 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
+	"time"
 )
 
 //
@@ -40,6 +41,7 @@ func ihash(key string) int {
 //
 // main/mrworker.go calls this function.
 //
+
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
@@ -47,6 +49,9 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the master.
 	// CallExample()
+	if err := os.MkdirAll(tmpdir, os.ModePerm); err != nil {
+		log.Fatalln("创建tmp文件夹失败, err:", err)
+	}
 	args := new(Args)
 	for {
 		reply := new(Reply)
@@ -56,6 +61,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			MapTask(mapf, reply)
 		case "reduce":
 			ReduceTask(reducef, reply)
+		case "wait":
+			time.Sleep(time.Second)
 		case "exit":
 			return
 		}
@@ -77,9 +84,11 @@ func MapTask(mapf func(string, string) []KeyValue, reply *Reply) error {
 		}
 		buckets[reduceindex] = append(buckets[reduceindex], kv)
 	}
+
 	for index, intermediate := range buckets {
-		name := fmt.Sprintf("mr-%v-%v", reply.Mapindex, index)
-		if file, err := os.Create(name + "temp"); err == nil {
+		name := Intermediatename(reply.Mapindex, index, reply.Stamp)
+		tempname := Tmpname()
+		if file, err := os.Create(tempname); err == nil {
 			enc := json.NewEncoder(file)
 			for _, kv := range intermediate {
 				enc.Encode(&kv)
@@ -88,7 +97,7 @@ func MapTask(mapf func(string, string) []KeyValue, reply *Reply) error {
 			log.Fatalf("写入中间文件出错, filename: %v, err:%v", name, err)
 			return fmt.Errorf("写入中间文件出错, filename: %v", name)
 		}
-		if err := os.Rename(name+"temp", name); err != nil {
+		if err := os.Rename(tempname, name); err != nil {
 			log.Fatalf("修改文件名字出错, filename: %v, err:%v", name, err)
 			return fmt.Errorf("修改文件名字出错, filename: %v", name)
 		}
@@ -99,7 +108,7 @@ func MapTask(mapf func(string, string) []KeyValue, reply *Reply) error {
 func ReduceTask(reducef func(string, []string) string, reply *Reply) error {
 	intermediate := make([]KeyValue, 0)
 	for i := 0; i < reply.Nm; i++ {
-		filename := fmt.Sprintf("mr-%v-%v", i, reply.Reduceindex)
+		filename := Intermediatename(i, reply.Reduceindex, reply.Stamp)
 		kva, err := Readjson(filename)
 		if err != nil {
 			return err
@@ -109,7 +118,9 @@ func ReduceTask(reducef func(string, []string) string, reply *Reply) error {
 	sort.Sort(ByKey(intermediate))
 
 	outputname := fmt.Sprintf("mr-out-%v", reply.Reduceindex)
-	ofile, err := os.Create(outputname + "temp")
+	tempname := Tmpname()
+
+	ofile, err := os.Create(tempname)
 	if err != nil {
 		return err
 	}
@@ -126,11 +137,10 @@ func ReduceTask(reducef func(string, []string) string, reply *Reply) error {
 		}
 		output := reducef(intermediate[i].Key, values)
 		// this is the correct format for each line of Reduce output.
-
 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
 		i = j
 	}
-	if err := os.Rename(outputname+"temp", outputname); err != nil {
+	if err := os.Rename(tempname, outputname); err != nil {
 		return err
 	}
 	return nil

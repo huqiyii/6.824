@@ -7,7 +7,10 @@ package mr
 //
 
 import (
+	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"strconv"
 )
 
@@ -36,6 +39,7 @@ type Reply struct {
 	Nm          int
 	Mapindex    int
 	Reduceindex int
+	Stamp       string
 }
 
 // Cook up a unique-ish UNIX-domain socket name
@@ -46,4 +50,23 @@ func masterSock() string {
 	s := "/var/tmp/824-mr-"
 	s += strconv.Itoa(os.Getuid())
 	return s
+}
+
+func GetUUID() string {
+	out, err := exec.Command("uuidgen").Output()
+	if err != nil {
+		log.Fatal(err)
+		return ""
+	}
+	return string(out)
+}
+
+var tmpdir = "./tmp"
+
+func Intermediatename(mapindex, index int, stamp string) string {
+	return fmt.Sprintf("%v/%v-mr-%v-%v", tmpdir, stamp, mapindex, index)
+}
+
+func Tmpname() string {
+	return fmt.Sprintf("%v/%v", tmpdir, GetUUID())
 }

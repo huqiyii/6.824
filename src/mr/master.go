@@ -18,6 +18,7 @@ type Master struct {
 	timetask  map[string]time.Time
 	mutex     sync.Mutex
 	stat      bool
+	stamp     string
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -34,7 +35,7 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 func (m *Master) judgemap(index int) bool {
 	for i := 0; i < m.nr; i++ {
-		name := fmt.Sprintf("mr-%v-%v", index, i)
+		name := Intermediatename(index, i, m.stamp)
 		if _, err := os.Stat(name); err != nil && os.IsNotExist(err) {
 			return false
 		}
@@ -42,49 +43,58 @@ func (m *Master) judgemap(index int) bool {
 	return true
 }
 
-func (m *Master) MapTask() (string, int) {
+func (m *Master) mapTask(reply *Reply) {
+	done := true
 	for index, name := range m.inputname {
-		if timebegin, ok := m.timetask[fmt.Sprintf("%v-%v", index, "map")]; !ok || (time.Now().After(timebegin) && !m.judgemap(index)) {
-			return name, index
+		if timebegin, ok := m.timetask[fmt.Sprintf("%v-0-%v", index, "map")]; !ok || (time.Now().After(timebegin) && !m.judgemap(index)) {
+			reply.Filename = name
+			reply.Type = "map"
+			reply.Nr = m.nr
+			reply.Mapindex = index
+			return
+		}
+		if !m.judgemap(index) {
+			done = false
 		}
 	}
-	return "", -1
+	if !done {
+		reply.Type = "wait"
+	}
 }
 
-func (m *Master) ReduceTask() int {
+func (m *Master) reduceTask(reply *Reply) {
+	done := true
 	for i := 0; i < m.nr; i++ {
-		timebegin, ok := m.timetask[fmt.Sprintf("%v-%v", i, "reduce")]
-		if !ok {
-			return i
+		timebegin, ok := m.timetask[fmt.Sprintf("0-%v-%v", i, "reduce")]
+		_, err := os.Stat(fmt.Sprintf("mr-out-%v", i))
+		if !ok || (time.Now().After(timebegin) && err != nil && os.IsNotExist(err)) {
+			reply.Nm = len(m.inputname)
+			reply.Nr = m.nr
+			reply.Reduceindex = i
+			reply.Type = "reduce"
+			return
 		}
-		if _, err := os.Stat(fmt.Sprintf("mr-out-%v", i)); time.Now().After(timebegin) && err != nil && os.IsNotExist(err) {
-			return i
+		if err != nil && os.IsNotExist(err) {
+			done = false
 		}
 	}
-	return -1
+	if !done {
+		reply.Type = "wait"
+	}
 }
 
 func (m *Master) Apply(args *Args, reply *Reply) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
-	key := ""
-	if mapname, index := m.MapTask(); mapname != "" && index != -1 {
-		reply.Filename = mapname
-		reply.Type = "map"
-		reply.Nr = m.nr
-		reply.Mapindex = index
-		key = fmt.Sprintf("%v-%v", reply.Mapindex, reply.Type)
-	} else if reduceindex := m.ReduceTask(); reduceindex >= 0 {
-		reply.Nm = len(m.inputname)
-		reply.Nr = m.nr
-		reply.Reduceindex = reduceindex
-		reply.Type = "reduce"
-		key = fmt.Sprintf("%v-%v", reply.Reduceindex, reply.Type)
-	} else {
-		reply.Type = "exit"
-		m.stat = true
+	if m.mapTask(reply); reply.Type == "" {
+		if m.reduceTask(reply); reply.Type == "" {
+			reply.Type = "exit"
+			m.stat = true
+		}
 	}
+	key := fmt.Sprintf("%v-%v-%v", reply.Mapindex, reply.Reduceindex, reply.Type)
 	m.timetask[key] = time.Now().Add(time.Second * 10)
+	reply.Stamp = m.stamp
 	return nil
 }
 
@@ -123,6 +133,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.inputname = files
 	m.mutex = sync.Mutex{}
 	m.timetask = make(map[string]time.Time)
+	m.stamp = GetUUID()
 	// Your code here.
 
 	m.server()
