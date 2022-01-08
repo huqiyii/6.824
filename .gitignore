@@ -1,3 +1,6 @@
 pkg/
 api.key
 *-handin.tar.gz
+*out*
+src/main/tmp/
+src/main/mr-tmp/
